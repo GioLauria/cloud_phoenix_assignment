@@ -1,5 +1,3 @@
-# cloud_phoenix_assignment
-Solution for cloud_phoenix_kata from claranet
 # Phoenix Application Problem
 This problem is about to create a production ready infrastructure for the Phoenix Application.
 
@@ -41,3 +39,140 @@ that were introduced during development. In particular:
 4. Notify any CPU peak
 5. Implements a CI/CD pipeline for the code
 6. Scale when the number of request are greater than 10 req /sec
+
+
+# Solution
+
+## Architecture
+Phoenix application will be containerized and exposed with ECS Fargate as orchestration engine with an Application Load 
+Balancer to distribute the load. For the database layer instead of using plain MongoDB will be used DocumentDB, AWS managed service
+for running MongoDB. Logs will be shipped to AWS CloudWatch. 
+
+Docker images will be managed by AWS managed docker registry ECR
+
+![Architecture](images/architecture.png)
+
+The solution will leverage the use of CodePipeline and its whole stack, to manage code, deploy, build and test.
+
+![Deployment](images/deployment.png)
+
+## Requirements
+
+| Requirement                                                                  | Solution                                   | 
+|------------------------------------------------------------------------------|--------------------------------------------|
+| Automate the creation of the infrastructure and the setup of the application.| CloudFormation stack                       | 
+| Recover from crashes. Implement a method autorestart the service on crash    | ECS HealthCheck                            | 
+| Backup the logs and database with rotation of 7 days                         | CloudWatch log retention                   | 
+| Notify any CPU peak                                                          | CloudWatch metrics + alarm                 | 
+| Implements a CI/CD pipeline for the code                                     | CodePipeline suite                         | 
+| Scale when the number of request are greater than 10 req /sec                | ECS target tracking scaling + ALB ALBRequestCountPerTarget metric | 
+| Unwanted features                                                            | ALB path base routing listener rules                      |
+
+## Assumptions
+
+- to keep the release pipeline easier Fargate task definition will be created using CloudFormation and not managed in the release pipeline
+- source code will be on CodeCommit
+- container DB_CONNECTION_STRING environment variable will be stored as plain text, in future release it's recommended to use Secret Manager service 
+to manage secret and retrieve directly from code
+- GET /generatecert and GET /crash will be considered a fault and traffic will not be forwarded to the ECS cluster
+- no domain and certificate will be managed for simplicity
+
+## Environment set-up
+
+All following commands can be scripted or managed with a cloudformation template avoiding manual copy and paste (Do not reinvent the wheel)
+
+### VPC
+
+```shell script
+aws cloudformation deploy --stack-name network --template-file cloudformation/vpc.yaml --parameter-overrides `
+Name=$env:APPLICATION_NAME `
+--capabilities CAPABILITY_NAMED_IAM 
+```
+
+### ALB
+
+where PUBLIC_SUBNETS and VPC can be retrieved from CloudFormation network stack
+We have IAM resources with custom names therefore --capabilities CAPABILITY_NAMED_IAM  is needed
+
+```shell script
+aws cloudformation deploy --stack-name alb --template-file cloudformation/load-balancer.yaml --parameter-overrides `
+LaunchType=Fargate `
+Subnets=$env:PUBLIC_SUBNETS `
+VpcId=$env:VPC `
+--capabilities CAPABILITY_NAMED_IAM 
+```
+
+### Database
+
+where VPC and PRIVATE_SUBNETS can be retrieved from CloudFormation network stack. 
+For simplicity default value for username will be used, for production enforce security on secrets
+We have IAM resources with custom names therefore --capabilities CAPABILITY_NAMED_IAM  is needed
+
+```shell script
+aws cloudformation deploy --stack-name documentDB --template-file cloudformation/database.yaml --parameter-overrides `
+VpcId=$env:VPC `
+MasterPassword=$env:DB_PASSWORD `
+Subnets=$env:PRIVATE_SUBNETS `
+--capabilities CAPABILITY_NAMED_IAM 
+```
+
+### ECS
+
+where PUBLIC_SUBNETS and VPC can be retrieved from CloudFormation network stack
+where SECURITY_GROUP can be retrieved from CloudFormation alb stack
+We have IAM resources with custom names therefore --capabilities CAPABILITY_NAMED_IAM  is needed
+
+```shell script
+aws cloudformation deploy --stack-name ecs-cluster --template-file cloudformation/ecs-cluster.yaml --parameter-overrides `
+LaunchType=Fargate `
+SourceSecurityGroup=$env:SECURITY_GROUP `
+Subnets=$env:PUBLIC_SUBNETS `
+VpcId=$env:VPC `
+--capabilities CAPABILITY_NAMED_IAM 
+```
+
+Manually create first image
+
+```shell script
+$(aws ecr get-login --region $env:REGION --no-include-email)
+docker build -t $env:REPOSITORY_URI:latest .
+docker push $REPOSITORY_URI:latest
+```
+
+where PUBLIC_SUBNETS can be retrieved from CloudFormation network stack
+where SECURITY_GROUP, TARGET_GROUP, ALB_FULLNAME and TARGET_GROUP_FULLNAME can be retrieved from CloudFormation alb stack
+where ECS_CLUSTER can be retrieved from CloudFormation ecs-cluster stack
+where DB_USER, DB_PASSWORD, DB_ENDPOINT can be retrieved from CloudFormation database stack
+We have IAM resources with custom names therefore --capabilities CAPABILITY_NAMED_IAM  is needed
+
+```shell script
+aws cloudformation deploy --stack-name ecs-service --template-file cloudformation/service.yaml --parameter-overrides `
+Cluster=$env:ECS_CLUSTER `
+LaunchType=Fargate `
+TargetGroup=$env:TARGET_GROUP `
+SourceSecurityGroup=$env:SECURITY_GROUP `
+Subnets=$env:PUBLIC_SUBNETS `
+EcrRepository=$env:ECR_REPOSITORY `
+DBUser=$env:DB_USER `
+DBPassword=$env:DB_PASSWORD `
+DBEndpoint=$env:DB_ENDPOINT `
+ALBFullname=$env:ALB_FULLNAME `
+TargetGroupFullname=$env:TARGET_GROUP_FULLNAME `
+--capabilities CAPABILITY_NAMED_IAM 
+```
+
+### CodePipeline
+
+where ECS_CLUSTER and ECR_REPOSITORY can be retrieved from CloudFormation ecs-cluster stack
+where ECS_SERVICE can be retrieved from CloudFormation ecs-service stack
+We have IAM resources with custom names therefore --capabilities CAPABILITY_NAMED_IAM  is needed
+
+```shell script
+aws cloudformation deploy --stack-name deployment-pipeline --template-file cloudformation/deployment-pipeline.yaml --parameter-overrides `
+Cluster=$env:ECS_CLUSTER `
+Service=$env:ECS_SERVICE `
+Repo=$env:REPO `
+Branch=$env:BRANCH `
+EcrRepository=$env:ECR_REPOSITORY `
+--capabilities CAPABILITY_NAMED_IAM 
+```
