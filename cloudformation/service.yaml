@@ -1,0 +1,163 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  Cluster:
+    Type: String
+  DesiredCount:
+    Type: Number
+    Default: 1
+  LaunchType:
+    Type: String
+    Default: Fargate
+    AllowedValues:
+      - Fargate
+  TargetGroup:
+    Type: String
+  SourceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+  EcrRepository:
+    Type: String
+  DBUser:
+    Type: String
+  DBPassword:
+    Type: String
+  DBEndpoint:
+    Type: String
+  LogGroupRetention:
+    Type: Number
+    Default: 7
+  ALBFullname:
+    Type: String
+  TargetGroupFullname:
+    Type: String
+
+Conditions:
+  Fargate: !Equals [ !Ref LaunchType, "Fargate" ]
+  EC2: !Equals [ !Ref LaunchType, "EC2" ]
+
+Resources:
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AWS::StackName}
+      RetentionInDays: !Ref LogGroupRetention
+
+  FargateService:
+    Type: AWS::ECS::Service
+    Condition: Fargate
+    Properties:
+      Cluster: !Ref Cluster
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref SourceSecurityGroup
+          Subnets: !Ref Subnets
+      LoadBalancers:
+        - ContainerName: simple-app
+          ContainerPort: 80
+          TargetGroupArn: !Ref TargetGroup
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}-simple-app
+      RequiresCompatibilities:
+        - !If [ Fargate, "FARGATE", "EC2" ]
+      Memory: 512
+      Cpu: 256
+      NetworkMode: !If [ Fargate, "awsvpc", "bridge" ]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: simple-app
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/attendance-service:repository/${EcrRepository}:latest
+#          Image: amazon/amazon-ecs-sample
+          Essential: true
+          Environment:
+            - Name: PORT
+              Value: 80
+            - Name: DB_CONNECTION_STRING
+              Value: !Sub mongodb://${DBUser}:${DBPassword}@${DBEndpoint}
+          Memory: 256
+          PortMappings:
+            - ContainerPort: 80
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: !Ref AWS::StackName
+
+  # ------------------------------ ALARM NOTIFICATION ------------------------------
+  CPUPeaksNotification:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: String
+      TopicName: ECS-CPU-alarm-notification
+  CPUPeaksAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: CPU utilization greater than 90%
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref Cluster
+        - Name: ServiceName
+          Value: !GetAtt FargateService.Name
+      Statistic: Maximum
+      Period: "60"
+      EvaluationPeriods: "1"
+      Threshold: "90"
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref CPUPeaksNotification
+
+  # ------------------------------ AUTO SCALING ------------------------------
+  AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 10
+      MinCapacity: 1
+      ResourceId: !Sub service/${Cluster}/${FargateService.Name}
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  AutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: ECSScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 600
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ALBRequestCountPerTarget
+          ResourceLabel: !Sub ${ALBFullname}/${TargetGroupFullname}
+
+Outputs:
+  Service:
+    Value: !If [ Fargate, !Ref FargateService, !Ref FargateService ]

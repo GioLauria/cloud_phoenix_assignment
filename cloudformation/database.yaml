@@ -1,0 +1,139 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: This stack deploys the DocumentDB
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+  DBClusterName:
+    Default: MyDocDB
+    Description: Cluster name
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*(-[a-zA-Z0-9]+)*"
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric
+      characters.
+  DBInstanceName:
+    Default: MyDocDBInstance
+    Description: Instance name
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*(-[a-zA-Z0-9]+)*"
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric
+      characters.
+  MasterUser:
+    NoEcho: 'false'
+    Description: The database admin account username
+    Default: docdbadmin
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric
+      characters.
+  MasterPassword:
+    NoEcho: 'true'
+    Description: The database admin account password
+    Type: String
+    MinLength: '1'
+    MaxLength: '41'
+    AllowedPattern: "[a-zA-Z0-9]+"
+    ConstraintDescription: must contain only alphanumeric characters.
+  DBInstanceClass:
+    Description: 'Instance class. Please refer to: https://docs.aws.amazon.com/documentdb/latest/developerguide/db-instance-classes.html#db-instance-classes-by-region'
+    Default: db.r4.large
+    Type: String
+    AllowedValues:
+      - db.r4.large
+      - db.r4.xlarge
+      - db.r4.2xlarge
+      - db.r4.4xlarge
+      - db.r4.8xlarge
+      - db.r4.16xlarge
+      - db.r5.large
+      - db.r5.xlarge
+      - db.r5.2xlarge
+      - db.r5.4xlarge
+      - db.r5.12xlarge
+      - db.r5.24xlarge
+    ConstraintDescription: 'Instance type must be of the ones supported for the region.
+      Please refer to: https://docs.aws.amazon.com/documentdb/latest/developerguide/db-instance-classes.html#db-instance-classes-by-region'
+
+Resources:
+  DocDBSubnetGroup:
+    Type: AWS::DocDB::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for DocumentDB
+      SubnetIds: !Ref Subnets
+  DocumentDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName:
+        Fn::Sub: SecurityGroup-${AWS::StackName}
+      GroupDescription: Allow access from VPC
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '27017'
+          ToPort: '27017'
+          CidrIp: 10.0.0.0/16
+  DBCluster:
+    Type: AWS::DocDB::DBCluster
+    DeletionPolicy: Delete
+    Properties:
+      DBClusterIdentifier: !Ref DBClusterName
+      DBSubnetGroupName: !Ref DocDBSubnetGroup
+      VpcSecurityGroupIds:
+        - !GetAtt DocumentDBSecurityGroup.GroupId
+      MasterUsername: !Ref MasterUser
+      MasterUserPassword: !Ref MasterPassword
+  DBInstance:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DBCluster
+      DBInstanceIdentifier: !Ref DBInstanceName
+      DBInstanceClass: !Ref DBInstanceClass
+    DependsOn: DBCluster
+# needed?
+#  VPCEndpointSecurityGroup:
+#    Type: AWS::EC2::SecurityGroup
+#    Properties:
+#      GroupName:
+#        Fn::Sub: SecurityGroup-${AWS::StackName}
+#      GroupDescription: Allow HTTPS access from VPC to VPC Endpoint
+#      VpcId:
+#        Ref: VPC
+#      SecurityGroupIngress:
+#        - IpProtocol: tcp
+#          FromPort: '443'
+#          ToPort: '443'
+#          CidrIp: 10.0.0.0/16
+#  SecretsManagerVPCEndpoint:
+#    Type: AWS::EC2::VPCEndpoint
+#    Properties:
+#      VpcEndpointType: Interface
+#      PrivateDnsEnabled: true
+#      VpcId:
+#        Ref: VPC
+#      SubnetIds:
+#      - Ref: PrivateSubnetOne
+#      - Ref: PrivateSubnetTwo
+#      SecurityGroupIds:
+#      - Ref: VPCEndpointSecurityGroup
+#      ServiceName:
+#        Fn::Join:
+#        - ''
+#        - - com.amazonaws.
+#          - Ref: AWS::Region
+#          - ".secretsmanager"
+Outputs:
+  SecurityGroupId:
+    Value: !GetAtt DocumentDBSecurityGroup.GroupId
+  ClusterId:
+    Value: !Ref DBCluster
+  ClusterEndpoint:
+    Value: !GetAtt DBCluster.Endpoint
