@@ -44,11 +44,10 @@ that were introduced during development. In particular:
 # Solution
 
 ## Architecture
-Phoenix application will be containerized and exposed with ECS Fargate as orchestration engine with an Application Load 
-Balancer to distribute the load. For the database layer instead of using plain MongoDB will be used DocumentDB, AWS managed service
-for running MongoDB. Logs will be shipped to AWS CloudWatch. 
+Fargate will orchestrate ECS instances together via ECR, with an ALB for load balancing.
+MongoDB will be run in a managed environment via AWS DocumentDB
+Logs will be consumed by AWS Cloudwatch
 
-Docker images will be managed by AWS managed docker registry ECR
 
 ![Architecture](images/architecture.png)
 
@@ -67,15 +66,6 @@ The solution will leverage the use of CodePipeline and its whole stack, to manag
 | Implements a CI/CD pipeline for the code                                     | CodePipeline suite                         | 
 | Scale when the number of request are greater than 10 req /sec                | ECS target tracking scaling + ALB ALBRequestCountPerTarget metric | 
 | Unwanted features                                                            | ALB path base routing listener rules                      |
-
-## Assumptions
-
-- to keep the release pipeline easier Fargate task definition will be created using CloudFormation and not managed in the release pipeline
-- source code will be on CodeCommit
-- container DB_CONNECTION_STRING environment variable will be stored as plain text, in future release it's recommended to use Secret Manager service 
-to manage secret and retrieve directly from code
-- GET /generatecert and GET /crash will be considered a fault and traffic will not be forwarded to the ECS cluster
-- no domain and certificate will be managed for simplicity
 
 ## Environment set-up
 
